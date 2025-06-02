@@ -575,8 +575,9 @@ $AfterFilterCount = @($results).Count
 ################
 # Start building the Summary 
 ################
-
-$summary += "MFA Summary for: $TenantDomain$newline"
+$TenantDomain = (Get-MgDomain | Where-Object {$_.isInitial}).Id
+$TenantName = $TenantDomain -replace "\.onmicrosoft\.com",""
+$summary += "MFA Summary for: $TenantName$newline"
 $summary += "$timestamp $newline$newline"
 
 
@@ -725,8 +726,6 @@ $results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MF
 
 # Export Results to CSV if the user chose to export
 if($ExportResults -eq $true) {
-    $TenantDomain = (Get-MgDomain | Where-Object {$_.isInitial}).Id
-    $TenantName = $TenantDomain -replace "\.onmicrosoft\.com",""
     $outputPath = "$Location\MFA-Report-$TenantName-$timestamp.csv"
     $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $outputPath
     Write-Host "-------------------------------------"
