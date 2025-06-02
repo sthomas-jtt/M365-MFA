@@ -30,6 +30,16 @@ Scopes: User.Read.All, UserAuthenticationMethod.Read.All, Policy.ReadWrite.Authe
 
 #>
 
+# If this was run from Powershell ISE we'll close it and launch it in regular Powershell
+if ($psISE) {
+    Write-Host "Detected PowerShell ISE. Launching regular PowerShell..."
+    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-File `"$PSCommandPath`"" -WindowStyle Normal
+    exit
+}
+Write-Host "Running in regular PowerShell."
+
+
+
 
 # Declare some variables and arrays
 $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
@@ -386,13 +396,23 @@ if ($globalAdminRole) {
     $globalAdmins = Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id | ForEach-Object { $_.Id }
 }
 
-#Check if Security Defaults are enabled
+# Check if Security Defaults are enabled
 $SecurityDefaultsEnabled = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy | Select-Object -ExpandProperty IsEnabled
 if ($SecurityDefaultsEnabled -eq $true) {
     Write-Host "Security Defaults are ENABLED$newline" -ForegroundColor Green
     } else {
     Write-Host "Security Defaults are DISABLED$newline" -ForegroundColor Red
     }
+
+# Check for Conditional Access
+$conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy
+
+if ($conditionalAccessPolicies) {
+    Write-Host "Conditional Access is enabled. Policies found:"
+    $conditionalAccessPolicies | Format-Table DisplayName, State
+} else {
+    Write-Host "No Conditional Access policies found.$newline"
+}
 
 # Get total users count
 $total = $users.Count
@@ -615,7 +635,6 @@ if (!$ApplyFiltering) { <#Not filtering, so no filters#> } else {
 
 # Set some counters after the results were filtered
 $AfterFilterCount = @($results).Count 
-#SkippedUserCount = ($BeforeFilterCount - $AfterFilterCount)
 
 
 
@@ -626,12 +645,19 @@ $TenantDomain = (Get-MgDomain | Where-Object {$_.isInitial}).Id
 $TenantName = $TenantDomain -replace "\.onmicrosoft\.com",""
 $summary += "MFA Summary for: $TenantName$newline"
 $summary += "$timestamp $newline$newline"
-if ($SecurityDefaultsEnabled -eq $true) {
-    $summary += "Security Defaults are ENABLED$newline$newline"
-    } else {
-    Write-Host "Security Defaults are DISABLED$newline$newline"
-    }
+if ($SecurityDefaultsEnabled -eq $true) { 
+    $summary += "Security Defaults are ENABLED$newline" 
+    } else { 
+    $summary += "Security Defaults are DISABLED$newline" 
+}
 
+if ($conditionalAccessPolicies) {
+    $summary += "Conditional Access is enabled. Policies found:`n"
+    $summary += $conditionalAccessPolicies | Format-Table DisplayName, State | Out-String
+} else {
+    $summary += "No Conditional Access policies found.`n"
+    $summary += $newline
+}
 
 ##########
 # Filter configuration summary
