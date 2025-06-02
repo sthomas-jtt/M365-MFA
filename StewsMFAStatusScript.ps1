@@ -23,7 +23,7 @@ Script Information
 Author: Stewart Thomas | Jackson Thornton Technologies
 Contact: sthomas@jttconnect.com
 Description: Extract and export results of Microsoft 365 Multi-factor Authentication
-Last Updated: 6/1/2025
+Last Updated: 6/2/2025
 Modules: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.DirectoryManagement
 Modules: Microsoft.Graph.Users, Microsoft.Graph.Beta.Users, Microsoft.Graph.Beta.Identity.SignIns
 Scopes: User.Read.All, UserAuthenticationMethod.Read.All, Policy.ReadWrite.AuthenticationMethod, Domain.Read.All 
@@ -37,7 +37,7 @@ $Location=Get-Location
 $results = @()  # Initialize an empty array
 $ProcessedUserCount=0
 $globalAdmins = @()
-$counter = 1
+$counter = 0
 $MFAMethodsCount = 0
 $MFAPhoneDetail = $null
 $MicrosoftAuthenticatorDevices = $null
@@ -51,6 +51,7 @@ $newline = [Environment]::NewLine
 
 # Setup all the functions
 
+<# existing was working but sometimes got an error
 function Maximize-PowerShellWindow {
 
     # Clear the screen
@@ -66,6 +67,30 @@ function Maximize-PowerShellWindow {
         public static extern IntPtr GetForegroundWindow();
     }
 "@
+    $WinHandle = [WinAPI]::GetForegroundWindow()
+    [WinAPI]::ShowWindow($WinHandle, 3) | Out-Null # 3 = Maximize window
+}
+#>
+
+function Maximize-PowerShellWindow {
+    # Clear the screen
+    Clear-Host
+
+    # Check if the WinAPI type already exists
+    if (-not ("WinAPI" -as [type])) {
+        Add-Type -TypeDefinition @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class WinAPI {
+            [DllImport("user32.dll")]
+            public static extern int ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")]
+            public static extern IntPtr GetForegroundWindow();
+        }
+"@
+    }
+
+    # Get the current window handle and maximize the window
     $WinHandle = [WinAPI]::GetForegroundWindow()
     [WinAPI]::ShowWindow($WinHandle, 3) | Out-Null # 3 = Maximize window
 }
@@ -218,7 +243,7 @@ function Get-FilterConfiguration {
             # Change filter mode to 2 internally; default filter uses flexible matching.
             $config.FilterMode          = 2
             $config.IncludeGlobalAdmins = $true
-            $config.IncludeMFADisabled  = $true
+            $config.IncludeLicensed     = $true
         }
         else {
             $config.IncludeGlobalAdmins  = Get-YesNoInput "Include Global Admins?"
@@ -255,6 +280,7 @@ Function Connect_MgGraph {
         #Write-Host ""
         $disconnectConfirm = Get-YesNoInput "Do you want to disconnect and sign in with a different account?"
         
+        
         if ($disconnectConfirm -eq $true) {
             Write-Host ""
             Write-Host "Disconnecting Microsoft Graph session..." -ForegroundColor Yellow
@@ -266,7 +292,7 @@ Function Connect_MgGraph {
 
             # Proceed to authentication after disconnect
             Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-            Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Domain.Read.All" -NoWelcome
+            Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Directory.Read.All", "Domain.Read.All" #-NoWelcome
 
             # Refresh authentication context after logging in
             $MgContext = Get-MgContext
@@ -278,7 +304,7 @@ Function Connect_MgGraph {
     } else {
         # Authenticate with Microsoft Graph if no active session
         Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-        Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Domain.Read.All" -NoWelcome
+        Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Directory.Read.All", "Domain.Read.All" #-NoWelcome
 
         # Refresh authentication context after logging in
         $MgContext = Get-MgContext
@@ -300,6 +326,10 @@ Function Connect_MgGraph {
     }
 }
 
+Function Set-DisconnectPreference {
+    $script:DisconnectLater = Get-YesNoInput "Do you want to disconnect from Microsoft Graph after the script completes?"
+}
+   
 
 ######################
 #
@@ -325,7 +355,7 @@ You can choose to filter the results. Filter mode options are:
   1) Including all users in the report
   2) Filter where any condition can be true. Flexible = More Results
   3) Filter where ALL conditions must be true. Strict = Fewer Results
-  4) Choose Default Filter = Include any Global Admins or any MFA Disabled accounts
+  4) Choose Default Filter = Include any Global Admins or any Licensed accounts
 
 If you choose to filter, you will be asked which filter mode, and if you want to include:
   - Global Admins
@@ -354,6 +384,8 @@ if($ExportResults -eq $true) {
 }
 $ShowSummaryWindow = (Get-YesNoInput "Would you like to see a summary?") # Prompts to output summary window
 Write-Host ""
+Set-DisconnectPreference # Ask user if they want to disconnect when the script is finished
+Write-Host ""
 Connect_MgGraph # Now we'll run the Connect_MgGraph function to connect to MgGraph
 
 
@@ -371,25 +403,25 @@ if ($globalAdminRole) {
 
 # Get total users count
 $total = $users.Count
-
+Write-Host "There are $total Users in this tenant$newline"
 
 # Get all users from MgBetaUser. This is the main loop for checking users and MFA details
-Get-MgBetaUser -All | foreach {
+Get-MgBetaUser -Filter "userType eq 'Member'" | foreach {
 
     $ProcessedUserCount++
     $Name= $_.DisplayName
     $UPN=$_.UserPrincipalName
     $UserId=$_.Id
 
-    Write-Progress -Activity "Processed users count: $counter - Processing $Name" -PercentComplete (($counter / $total) * 100)
-    $counter++
+    $PercentComplete = [math]::Floor(($ProcessedUserCount / $total) * 100)
+    Write-Progress -Activity "Processing user: $ProcessedUserCount - Processing $Name" -PercentComplete ([Math]::Min(100, $PercentComplete))
 
     $isGlobalAdmin = $_.Id -in $globalAdmins  # Check if user ID is in global admin list
 
     if($_.AccountEnabled -eq $true) { $SigninStatus="Allowed" } else { $SigninStatus="Blocked" }
     if(($_.AssignedLicenses).Count -ne 0) { $LicenseStatus="Licensed" } else { $LicenseStatus="Unlicensed" }   
  
-    [array]$MFAData=Get-MgBetaUserAuthenticationMethod -UserId $UPN
+    [array]$MFAData=Get-MgBetaUserAuthenticationMethod -UserId $UserId # changed to $UserId instead of $UPN
     $AuthenticationMethod=@()
     $AdditionalDetails=@()
     
@@ -468,6 +500,26 @@ Get-MgBetaUser -All | foreach {
     $AuthenticationMethod =$AuthenticationMethod | Sort-Object | Get-Unique
     $AuthenticationMethods= $AuthenticationMethod  -join ","
     $AdditionalDetail=$AdditionalDetails -join ", "
+        
+    # Get the default MFA method
+    $DefaultMFAUri = "https://graph.microsoft.com/beta/users/$UserId/authentication/signInPreferences"
+    $GetDefaultMFAMethod = Invoke-MgGraphRequest -Uri $DefaultMFAUri -Method GET
+    if ($GetDefaultMFAMethod.userPreferredMethodForSecondaryAuthentication) {
+        $MFAMethodisDefault = $GetDefaultMFAMethod.userPreferredMethodForSecondaryAuthentication
+        Switch ($MFAMethodisDefault) {
+            "push" { $MFAMethodisDefault = "Microsoft authenticator app" }
+            "oath" { $MFAMethodisDefault = "Authenticator app or hardware token" }
+            "voiceMobile" { $MFAMethodisDefault = "Mobile phone" }
+            "voiceAlternateMobile" { $MFAMethodisDefault = "Alternate mobile phone" }
+            "voiceOffice" { $MFAMethodisDefault = "Office phone" }
+            "sms" { $MFAMethodisDefault = "SMS" }
+            Default { $MFAMethodisDefault = "Unknown method" }
+        }
+    }
+    else {
+        $MFAMethodisDefault = "Not Enabled"
+    }    
+       
      
     # Per-user MFA status
     $PerUserMFAStatus=@(Invoke-MgGraphRequest -Method GET -Uri "/beta/users/$UserId/authentication/requirements").perUserMfaState
@@ -492,7 +544,7 @@ Get-MgBetaUser -All | foreach {
 
     # Lets write some output to the screen here
     Write-Host "###########################"
-    Write-Host "Processing User $ProcessedUserCount - $Name"
+    Write-Host "Processing User $ProcessedUserCount of ($total) - $Name"
     if ($isGlobalAdmin) { Write-Host "Role: Global Admin" -ForegroundColor Yellow } else { "Role: User" }
     Write-Host "Sign-in Satus: $SigninStatus"
     Write-Host "License Status: $LicenseStatus"
@@ -500,6 +552,7 @@ Get-MgBetaUser -All | foreach {
     if($MFAStrength -eq "Disabled"){ Write-Host "MFA Strength: $MFAStrength" -ForegroundColor Red } 
     if($MFAStrength -eq "Strong") { Write-Host "MFA Strength: $MFAStrength" -ForegroundColor Green } 
     if($MFAStrength -eq "Weak") { Write-Host "MFA Strength: $MFAStrength" -ForegroundColor Cyan }
+    Write-Host "Default MFA Method: $MFAMethodisDefault"
     if($AuthenticationMethods){ Write-Host "$MFAMethodsCount MFA Methods: " $AuthenticationMethods }
     if($AuthenticatorAppMethods){ Write-Host "Authenticator Apps: $($AuthenticatorAppMethods -join ', ')" }
     if($PasswordlessMethods){ Write-Host "Passwordless Authenticator methods: $($PasswordlessMethods -join ', ')" }
@@ -520,6 +573,7 @@ Get-MgBetaUser -All | foreach {
         'Per-user MFA Status'     = $PerUserMFAStatus
         'MFA Strength'            = $MFAStrength
         'MFA Method Count'        = $MFAMethodsCount
+        'Default MFA Method'      = $MFAMethodisDefault
         'MFA Methods'             = $AuthenticationMethods
         'MS Authenticator App'    = $($AuthenticatorAppMethods -join ', ')
         'Authentication Phone'    = $($MFAPhoneDetail -join ', ')
@@ -735,7 +789,13 @@ if($ExportResults -eq $true) {
 # Show Summary Window if selected
 if($ShowSummaryWindow -eq $true){ Show-SummaryInNotepad -SummaryText $summary }
 
-
-
+# Check if user selected to disconnect session
+if ($script:DisconnectLater -eq $true) {
+    Write-Host "Disconnecting Microsoft Graph session..." -ForegroundColor Yellow
+    Disconnect-MgGraph | Out-Null
+    Write-Host "Session disconnected successfully." -ForegroundColor Green
+} else {
+    Write-Warning "You are still connected to Microsoft Graph."
+}
 
 
