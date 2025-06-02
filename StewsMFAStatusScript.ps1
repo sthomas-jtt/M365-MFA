@@ -51,26 +51,6 @@ $newline = [Environment]::NewLine
 
 # Setup all the functions
 
-<# existing was working but sometimes got an error
-function Maximize-PowerShellWindow {
-
-    # Clear the screen
-    Clear-Host
-
-    Add-Type -TypeDefinition @"
-    using System;
-    using System.Runtime.InteropServices;
-    public class WinAPI {
-        [DllImport("user32.dll")]
-        public static extern int ShowWindow(IntPtr hWnd, int nCmdShow);
-        [DllImport("user32.dll")]
-        public static extern IntPtr GetForegroundWindow();
-    }
-"@
-    $WinHandle = [WinAPI]::GetForegroundWindow()
-    [WinAPI]::ShowWindow($WinHandle, 3) | Out-Null # 3 = Maximize window
-}
-#>
 
 function Maximize-PowerShellWindow {
     # Clear the screen
@@ -260,6 +240,14 @@ function Get-FilterConfiguration {
 }
 
 Function Connect_MgGraph {
+    $Scopes = @(
+        "User.Read.All",
+        "UserAuthenticationMethod.Read.All",
+        #"Policy.ReadWrite.AuthenticationMethod",
+        "Policy.Read.All"
+        "Directory.Read.All",
+        "Domain.Read.All"
+    )
 
     # Check if already authenticated
     $MgContext = Get-MgContext
@@ -292,7 +280,7 @@ Function Connect_MgGraph {
 
             # Proceed to authentication after disconnect
             Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-            Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Directory.Read.All", "Domain.Read.All" #-NoWelcome
+            Connect-MgGraph -Scopes $Scopes #-NoWelcome
 
             # Refresh authentication context after logging in
             $MgContext = Get-MgContext
@@ -304,7 +292,7 @@ Function Connect_MgGraph {
     } else {
         # Authenticate with Microsoft Graph if no active session
         Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-        Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All", "Policy.ReadWrite.AuthenticationMethod", "Directory.Read.All", "Domain.Read.All" #-NoWelcome
+        Connect-MgGraph -Scopes $Scopes #-NoWelcome
 
         # Refresh authentication context after logging in
         $MgContext = Get-MgContext
@@ -326,9 +314,6 @@ Function Connect_MgGraph {
     }
 }
 
-Function Set-DisconnectPreference {
-    $script:DisconnectLater = Get-YesNoInput "Do you want to disconnect from Microsoft Graph after the script completes?"
-}
    
 
 ######################
@@ -384,7 +369,8 @@ if($ExportResults -eq $true) {
 }
 $ShowSummaryWindow = (Get-YesNoInput "Would you like to see a summary?") # Prompts to output summary window
 Write-Host ""
-Set-DisconnectPreference # Ask user if they want to disconnect when the script is finished
+# Ask user if they want to disconnect when the script is finished
+$DisconnectLater = Get-YesNoInput "Do you want to disconnect from Microsoft Graph after the script completes?" 
 Write-Host ""
 Connect_MgGraph # Now we'll run the Connect_MgGraph function to connect to MgGraph
 
@@ -400,6 +386,13 @@ if ($globalAdminRole) {
     $globalAdmins = Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id | ForEach-Object { $_.Id }
 }
 
+#Check if Security Defaults are enabled
+$SecurityDefaultsEnabled = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy | Select-Object -ExpandProperty IsEnabled
+if ($SecurityDefaultsEnabled -eq $true) {
+    Write-Host "Security Defaults are ENABLED$newline" -ForegroundColor Green
+    } else {
+    Write-Host "Security Defaults are DISABLED$newline" -ForegroundColor Red
+    }
 
 # Get total users count
 $total = $users.Count
@@ -633,7 +626,11 @@ $TenantDomain = (Get-MgDomain | Where-Object {$_.isInitial}).Id
 $TenantName = $TenantDomain -replace "\.onmicrosoft\.com",""
 $summary += "MFA Summary for: $TenantName$newline"
 $summary += "$timestamp $newline$newline"
-
+if ($SecurityDefaultsEnabled -eq $true) {
+    $summary += "Security Defaults are ENABLED$newline$newline"
+    } else {
+    Write-Host "Security Defaults are DISABLED$newline$newline"
+    }
 
 
 ##########
@@ -790,9 +787,11 @@ if($ExportResults -eq $true) {
 if($ShowSummaryWindow -eq $true){ Show-SummaryInNotepad -SummaryText $summary }
 
 # Check if user selected to disconnect session
-if ($script:DisconnectLater -eq $true) {
+if ($DisconnectLater -eq $true) {
     Write-Host "Disconnecting Microsoft Graph session..." -ForegroundColor Yellow
     Disconnect-MgGraph | Out-Null
+    # clear tokens
+    Clear-MgContextCache
     Write-Host "Session disconnected successfully." -ForegroundColor Green
 } else {
     Write-Warning "You are still connected to Microsoft Graph."
