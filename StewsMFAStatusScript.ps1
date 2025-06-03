@@ -26,18 +26,9 @@ Description: Extract and export results of Microsoft 365 Multi-factor Authentica
 Last Updated: 6/2/2025
 Modules: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.DirectoryManagement
 Modules: Microsoft.Graph.Users, Microsoft.Graph.Beta.Users, Microsoft.Graph.Beta.Identity.SignIns
-Scopes: User.Read.All, UserAuthenticationMethod.Read.All, Policy.ReadWrite.AuthenticationMethod, Domain.Read.All 
+Scopes: User.Read.All, UserAuthenticationMethod.Read.All, Policy.Read.All, Domain.Read.All 
 
 #>
-
-# If this was run from Powershell ISE we'll close it and launch it in regular Powershell
-if ($psISE) {
-    Write-Host "Detected PowerShell ISE. Launching regular PowerShell..."
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-File `"$PSCommandPath`"" -WindowStyle Normal
-    exit
-}
-Write-Host "Running in regular PowerShell."
-
 
 
 
@@ -57,12 +48,16 @@ $hasAuthenticator = $false
 $newline = [Environment]::NewLine
 
 
-
-
 # Setup all the functions
 
-
 function Maximize-PowerShellWindow {
+    # If this was run from Powershell ISE we'll close it and launch it in regular Powershell
+    if ($psISE) {
+        Write-Host "Detected PowerShell ISE. Launching regular PowerShell..."
+        Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-File `"$PSCommandPath`"" -WindowStyle Normal
+        exit
+    }
+
     # Clear the screen
     Clear-Host
 
@@ -140,7 +135,7 @@ if ($UserChoice -eq $true) {
     Write-Host "`nModules verification complete." -ForegroundColor Cyan
     Write-Host ""
 } else {
-    Write-Host "`nSkipping module verification..." -ForegroundColor Green
+    Write-Host "`nSkipping module verification..." -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -167,10 +162,8 @@ function Get-YesNoInput {
         [string]$Prompt
     )
     # Display the prompt without advancing to a new line
-    #Write-Host "$Prompt (Y/N): " -NoNewline
     Write-Host $Prompt -NoNewline -ForegroundColor White
     Write-Host " (Y/N): " -NoNewline -ForegroundColor Yellow
-
 
     do {
         # Read a single key; NoEcho prevents it from displaying automatically, IncludeKeyDown captures the key when pressed
@@ -182,6 +175,39 @@ function Get-YesNoInput {
     Write-Host $response
     
     return $response -match "^[Yy]$"
+}
+
+function Get-YesNoInputTimeout {
+    param(
+        [string]$Prompt,
+        [int]$Timeout = 10  # Default timeout in seconds
+    )
+
+    # Display prompt without advancing to a new line
+    Write-Host $Prompt -NoNewline -ForegroundColor White
+    Write-Host " (Y/N): " -NoNewline -ForegroundColor Yellow
+
+    # Initialize timeout variables
+    $startTime = Get-Date
+    $response = $null
+
+    while (((Get-Date) - $startTime).TotalSeconds -lt $Timeout) {
+        # Check for key input
+        if ([console]::KeyAvailable) {
+            $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            $response = $key.Character
+            if ($response -match "^[YyNn]$") {
+                Write-Host $response
+                return $response -match "^[Yy]$"
+            }
+        }
+
+        Start-Sleep -Milliseconds 100  # Prevent CPU overuse
+    }
+
+    # Timeout reached
+    Write-Host "`nTime's up! No response received." -ForegroundColor Yellow
+    return $true  # Default response if no input within timeout
 }
 
 function Get-FilterModeInput {
@@ -253,7 +279,6 @@ Function Connect_MgGraph {
     $Scopes = @(
         "User.Read.All",
         "UserAuthenticationMethod.Read.All",
-        #"Policy.ReadWrite.AuthenticationMethod",
         "Policy.Read.All"
         "Directory.Read.All",
         "Domain.Read.All"
@@ -262,8 +287,7 @@ Function Connect_MgGraph {
     # Check if already authenticated
     $MgContext = Get-MgContext
     if ($MgContext) {
-        #Write-Host "Currently authenticated as: $($MgContext.Account)" -ForegroundColor Cyan
-        
+           
         # Get Tenant Info if authenticated
         $TenantInfo = Get-MgOrganization
         if ($TenantInfo) {
@@ -295,7 +319,7 @@ Function Connect_MgGraph {
             # Refresh authentication context after logging in
             $MgContext = Get-MgContext
         } else {
-            Write-Host "Continuing with the current authentication session." -ForegroundColor Green
+            Write-Host "Continuing with the current authentication session." -ForegroundColor Cyan
             Write-Host ""
             return
         }
@@ -317,7 +341,7 @@ Function Connect_MgGraph {
        } else {
             Write-Host "Unable to retrieve tenant information." -ForegroundColor Red
         }
-        Write-Host "Connected successfully as: $($MgContext.Account) to $TenantDomain" -ForegroundColor Green
+        Write-Host "Connected successfully as: $($MgContext.Account) to $TenantDomain" -ForegroundColor Cyan
         Write-Host ""
     } else {
         Write-Host "Microsoft Graph connection failed." -ForegroundColor Red
@@ -379,9 +403,6 @@ if($ExportResults -eq $true) {
 }
 $ShowSummaryWindow = (Get-YesNoInput "Would you like to see a summary?") # Prompts to output summary window
 Write-Host ""
-# Ask user if they want to disconnect when the script is finished
-$DisconnectLater = Get-YesNoInput "Do you want to disconnect from Microsoft Graph after the script completes?" 
-Write-Host ""
 Connect_MgGraph # Now we'll run the Connect_MgGraph function to connect to MgGraph
 
 
@@ -408,7 +429,7 @@ if ($SecurityDefaultsEnabled -eq $true) {
 $conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy
 
 if ($conditionalAccessPolicies) {
-    Write-Host "Conditional Access is enabled. Policies found:"
+    Write-Host "Conditional Access is enabled." -ForegroundColor Green "Policies found:"
     $conditionalAccessPolicies | Format-Table DisplayName, State
 } else {
     Write-Host "No Conditional Access policies found.$newline"
@@ -603,6 +624,8 @@ Get-MgBetaUser -Filter "userType eq 'Member'" | foreach {
 
     Write-Output "" #new line in between users
 }
+# Clear the progress bar
+Write-Progress -Activity "Processing user: $ProcessedUserCount - Processing $Name" -Completed
 
 
 # Set a counter for before results are filtered
@@ -681,7 +704,6 @@ if($filterConfig.FilterMode -eq 1) {
 }
 $summary += "Export to CSV: $ExportResults$newline"
 $summary += "Show Summary: $ShowSummaryWindow$newline$newline"
-
 
 
 
@@ -798,29 +820,37 @@ MFA Method Breakdown
 }
 
 
-# Always display the report in a grid view
-$results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MFA Report"
+@"
+---------------------------------------------------------------------
+Script has completed analyzing users
+---------------------------------------------------------------------$newline
+"@
+
 
 # Export Results to CSV if the user chose to export
 if($ExportResults -eq $true) {
     $outputPath = "$Location\MFA-Report-$TenantName-$timestamp.csv"
     $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $outputPath
-    Write-Host "-------------------------------------"
-    Write-Host "MFA report saved to: $outputPath"
+    Write-Host "MFA report saved to: $outputPath$newline"
 }
+
+# Check if user wants to disconnect the MgGraph session
+$result = Get-YesNoInputTimeout -Prompt "Disconnect from MgGraph? I'll wait 10 seconds ..."
+if ($result) {
+    Write-Host "Disconnecting from Microsoft Graph and clearing tokens ...$newline" -ForegroundColor Cyan
+    # Disconnect and clear tokens
+    Disconnect-MgGraph | Out-Null
+    Clear-MgContextCache
+} else {
+    Write-Host "Maintaining connection to MgGraph.$newline" -ForegroundColor Cyan
+}
+
 
 # Show Summary Window if selected
 if($ShowSummaryWindow -eq $true){ Show-SummaryInNotepad -SummaryText $summary }
 
-# Check if user selected to disconnect session
-if ($DisconnectLater -eq $true) {
-    Write-Host "Disconnecting Microsoft Graph session..." -ForegroundColor Yellow
-    Disconnect-MgGraph | Out-Null
-    # clear tokens
-    Clear-MgContextCache
-    Write-Host "Session disconnected successfully." -ForegroundColor Green
-} else {
-    Write-Warning "You are still connected to Microsoft Graph."
-}
+# Always display the report in a grid view
+$results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MFA Report"
+
 
 
