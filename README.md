@@ -19,6 +19,7 @@ Defaults or Conditional Access, we should be setting all per-user MFA settings t
 https://learn.microsoft.com/en-us/microsoft-365/admin/security-and-compliance/multi-factor-authentication-microsoft-365 
 
 ------------------
+First, do you need to check for missing Powershell modules?
 
 Welcome to the Stew's fancy MFA script!
 
@@ -41,4 +42,3 @@ You can choose to export the results to a CSV file that will be saved to the sam
 
 You can choose to display a summary of the results in a separate window.
 
-First, do you need to check for missing Powershell modules?
