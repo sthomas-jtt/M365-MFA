@@ -18,3 +18,27 @@ Now that legacy (per-user MFA) authentication is being retired and MFA managemen
 Defaults or Conditional Access, we should be setting all per-user MFA settings to disabled!
 https://learn.microsoft.com/en-us/microsoft-365/admin/security-and-compliance/multi-factor-authentication-microsoft-365 
 
+------------------
+
+Welcome to the Stew's fancy MFA script!
+
+The results will always be displayed in a separate Grid View Powershell window. (Like a spreadsheet)
+
+You can choose to filter the results. Filter mode options are:
+  1) Including all users in the report
+  2) Filter where any condition can be true. Flexible = More Results
+  3) Filter where ALL conditions must be true. Strict = Fewer Results
+  4) Choose Default Filter = Include any Global Admins or any Licensed accounts
+
+If you choose to filter, you will be asked which filter mode, and if you want to include:
+  - Global Admins
+  - Licensed users
+  - Users without MFA methods
+  - Users NOT set to disabled in Per-user MFA
+  - Users with Sign-in allowed
+
+You can choose to export the results to a CSV file that will be saved to the same location as the script.
+
+You can choose to display a summary of the results in a separate window.
+
+First, do you need to check for missing Powershell modules?
