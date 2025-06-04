@@ -53,6 +53,7 @@ function Clear-MgContextCache {
 }
 
 function Check_Modules {
+    $newline
     $UserChoice = Get-YesNoInput "First, do you need to check for missing Powershell modules?"
     if ($UserChoice -eq $true) {
         Write-Host "`nChecking for required Microsoft Graph modules..." -ForegroundColor Cyan
@@ -60,6 +61,7 @@ function Check_Modules {
             "Microsoft.Graph.Authentication",
             "Microsoft.Graph.Beta.Identity.SignIns",
             "Microsoft.Graph.Beta.Users",
+            "Microsoft.Graph.Identity.SignIns",
             "Microsoft.Graph.Identity.DirectoryManagement",
             "Microsoft.Graph.Users"
         )
@@ -68,7 +70,7 @@ function Check_Modules {
         if ($MissingModules.Count -gt 0) {
             Write-Host "`nInstalling missing modules..." -ForegroundColor Yellow
             Install-Module -Name $MissingModules -Scope CurrentUser -AllowClobber -Force
-            Write-Host "`nInstallation completed." -ForegroundColor Magenta
+            Write-Host "`nInstallation completed. Starting modules verification ..." -ForegroundColor Magenta
         } else {
             Write-Host "`nAll required modules are already installed." -ForegroundColor Green
         }
@@ -78,8 +80,12 @@ function Check_Modules {
             }
         }
         Write-Host "`nModules verification complete.$newline" -ForegroundColor Cyan
+        Start-Sleep -Seconds 2
+        Clear-Host
     } else {
         Write-Host "`nSkipping module verification...$newline" -ForegroundColor Cyan
+        Start-Sleep -Seconds 1
+        Clear-Host      
     }
 }
 
@@ -376,6 +382,7 @@ function Get-UserMfaDetails {
 #---------------------------------------------------------------------------------------------#
 
 Maximize-PowerShellWindow
+Check_Modules
 Clear-MgContextCache
 
 $menutext = @"
@@ -407,7 +414,7 @@ You can choose to display a summary of the results in a separate window.
 "@
 Write-Output $menutext
 
-Check_Modules
+
 $filterConfig = Get-FilterConfiguration
 $ExportResults = (Get-YesNoInput "Export Results to CSV?")
 if($ExportResults -eq $true) { Write-Host "File path will be: $ExportPath" -ForegroundColor Cyan $newline }
@@ -442,7 +449,7 @@ if ($SecurityDefaultsEnabled -eq $true) {
 # Check for Conditional Access
 $conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy
 if ($conditionalAccessPolicies) {
-    Write-Host "Conditional Access is enabled." -ForegroundColor Green "Policies found:"
+    Write-Host "Conditional Access policies found:" -ForegroundColor Green
     $conditionalAccessPolicies | Format-Table DisplayName, State
 } else {
     Write-Host "No Conditional Access policies found.$newline"
@@ -464,16 +471,13 @@ foreach ($user in $users) {
     $userResult = Get-UserMfaDetails -User $user -skuTable $skuTable -globalAdmins $globalAdmins
     $results += $userResult
 
-    # Output per-user summary (customize as needed)
-    #Write-Host ("[{0}/{1}] {2} ({3}) - MFA: {4}, Methods: {5}" -f $ProcessedUserCount, $total, $userResult.DisplayName, $userResult.UserPrincipalName, $userResult.'MFA Strength', $userResult.'MFA Methods')
-
     # Detailed per-user output
     Write-Host "###########################"
     Write-Host "[$ProcessedUserCount/$total] Processing: $($userResult.DisplayName)"
     if ($userResult.Role -eq "Global Admin") { Write-Host "Role: Global Admin" -ForegroundColor Yellow } else { Write-Host "Role: User" }
     Write-Host "Sign-in Status: $($userResult.'Sign-in Status')"
     Write-Host "License Status: $($userResult.'License Status')"
-    if ($userResult.'License Names') { Write-Host "License Names: $($userResult.'License Names')" }
+    if ($userResult.'License Names' -ne "None") { Write-Host "License Names: $($userResult.'License Names')" }
     Write-Host "Per-user MFA Status: $($userResult.'Per-user MFA Status')"
     if ($userResult.'MFA Strength' -eq "Disabled") { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Red }
     if ($userResult.'MFA Strength' -eq "Strong")   { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Green }
@@ -653,7 +657,9 @@ $result = Get-YesNoInputTimeout -Prompt "Disconnect from MgGraph? I'll wait 10 s
 if ($result) {
     Write-Host "Disconnecting from Microsoft Graph and clearing tokens ...$newline" -ForegroundColor Cyan
     Disconnect-MgGraph | Out-Null
-    Clear-MgContextCache
+    Start-Sleep -Seconds 1  # Allow time for disconnection
+    Clear-MgGraphContext # Clear the context cache
+    Clear-MgContextCache # Run function to remove any cached tokens
 } else {
     Write-Host "Maintaining connection to MgGraph.$newline" -ForegroundColor Cyan
 }
@@ -661,5 +667,26 @@ if ($result) {
 # If the user chose to show a summary, display it in Notepad
 if($ShowSummaryWindow -eq $true){ Show-SummaryInNotepad -SummaryText $summary }
 
-# Display the results in a GridView window
-$results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MFA Report"
+# Show results in Excel or the default app
+if($ExportResults -eq $true) { # If you chose to export results, open the CSV file
+    Start-Process $outputPath  
+    } else { # If you did not choose to export results, create a temp file and show results
+        $csvPath = "$env:TEMP\MFA-Results.csv"
+        $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $csvPath
+        Start-Process $csvPath  # This will open the CSV file in Excel or the default app
+    }
+
+<#
+if (Get-Command Out-GridView -ErrorAction SilentlyContinue) {
+    $results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MFA Report"
+} else {
+    Write-Warning "Out-GridView is not available. Showing results in CSV format."
+    if($ExportResults -eq $true) {
+    Start-Process $outputPath  # Opens in Excel if installed
+    } else {
+        $csvPath = "$env:TEMP\MFA-Results.csv"
+        $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $csvPath
+        Start-Process $csvPath  # This will open the CSV file in Excel or the default app
+    }
+}
+#>
