@@ -1,10 +1,19 @@
 <#
 Author: Stewart Thomas | Jackson Thornton Technologies
-Description: Extract and export results of Microsoft 365 Multi-factor Authentication
-Last Updated: 6/3/2025
-Modules: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.DirectoryManagement
-Modules: Microsoft.Graph.Users, Microsoft.Graph.Beta.Users, Microsoft.Graph.Beta.Identity.SignIns
-Scopes: User.Read.All, UserAuthenticationMethod.Read.All, Policy.Read.All, Domain.Read.All 
+Description: Retrieve and export results of Microsoft 365 Multi-factor Authentication
+Last Updated: 6/4/2025
+Modules: Microsoft.Graph.Authentication
+         Microsoft.Graph.Identity.DirectoryManagement
+         Microsoft.Graph.Beta.Identity.SignIns
+         Microsoft.Graph.Users
+         Microsoft.Graph.Beta.Users
+         Microsoft.Graph.Beta.Identity.SignIns
+Scopes:  User.Read.All
+         UserAuthenticationMethod.Read.All
+         Policy.Read.All
+         Directory.Read.All
+         Domain.Read.All
+         Organization.Read.All
 #>
 
 #---------------------------------------------------------------------------------------------#
@@ -89,14 +98,20 @@ function Check_Modules {
     }
 }
 
+function ExportResults {
+    $outputPath = "$ExportPath\MFA-Report-$TenantName-$timestamp.csv"
+    $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $outputPath
+    Write-Host "MFA report saved to: $outputPath$newline"
+    Start-Process $outputPath  
+}
 function Show-SummaryInNotepad {
     param(
         [string]$Title = "MFA Summary Information",
         [string]$SummaryText
     )
-    $TempFile = "$env:TEMP\Summary.txt"
-    $SummaryText | Out-File -Encoding UTF8 $TempFile
-    Start-Process "notepad.exe" -ArgumentList $TempFile
+    $SummaryFile = "$ExportPath\MFA-Summary-$TenantName-$timestamp.txt"
+    $SummaryText | Out-File -Encoding UTF8 $SummaryFile
+    Start-Process "notepad.exe" -ArgumentList $SummaryFile
 }
 
 function Get-YesNoInput {
@@ -167,11 +182,13 @@ function Get-FilterConfiguration {
     }
     if ($FilterMode -eq 2 -or $FilterMode -eq 3 -or $FilterMode -eq 4) {
         if ($FilterMode -eq 4) {
-            $config.UseDefaultFilter    = $true
-            $config.FilterMode          = 2
-            $config.IncludeGlobalAdmins = $true
-            $config.IncludeLicensed     = $true
+            $config.UseDefaultFilter     = $true
+            $config.IncludeGlobalAdmins  = $true
+            $config.IncludeLicensed      = $true
+            $config.IncludeSigninAllowed = $true
+            Write-Host ""
         } else {
+            Write-Host ""
             $config.IncludeGlobalAdmins  = Get-YesNoInput "Include Global Admins?"
             $config.IncludeLicensed      = Get-YesNoInput "Include Licensed Users?"
             $config.IncludeMFADisabled   = Get-YesNoInput "Include Users with no MFA?"
@@ -194,41 +211,43 @@ function Connect_MgGraph {
     )
     $MgContext = Get-MgContext
     if ($MgContext) {
+        # Already connected, ask if user wants to disconnect and switch accounts
         $TenantInfo = Get-MgOrganization
         if ($TenantInfo) {
             $script:TenantDomain = ($TenantInfo.VerifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -ExpandProperty Name)
-            Write-Host "Connected successfully as: $($MgContext.Account) to $TenantDomain$newline" -ForegroundColor Cyan
-        } else {
-            Write-Host "Unable to retrieve tenant information." -ForegroundColor Red
+            Write-Host "Connected as: $($MgContext.Account) to $TenantDomain$newline" -ForegroundColor Cyan
         }
         $disconnectConfirm = Get-YesNoInput "Do you want to disconnect and sign in with a different account?"
-        if ($disconnectConfirm -eq $true) {
+        if ($disconnectConfirm) {
             Write-Host "Disconnecting Microsoft Graph session..." -ForegroundColor Yellow
             Disconnect-MgGraph | Out-Null
             $MgContext = $null
-            Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-            Connect-MgGraph -Scopes $Scopes
-            $MgContext = Get-MgContext
         } else {
             Write-Host "$newline Continuing with the current authentication session." -ForegroundColor Cyan
             Write-Host ""
             return
         }
-    } else {
-        Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
-        Connect-MgGraph -Scopes $Scopes
-        $MgContext = Get-MgContext
     }
-    if ($MgContext) {
-        $TenantInfo = Get-MgOrganization
-        if ($TenantInfo) {
-            $TenantDomain = ($TenantInfo.VerifiedDomains | Where-Object { $_.IsInitial -eq $true } | Select-Object -ExpandProperty Name)
-        } else {
-            Write-Host "Unable to retrieve tenant information." -ForegroundColor Red
+    # If not connected (either first run or after disconnect), prompt for authentication
+    if (-not $MgContext) {
+        Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
+        Connect-MgGraph -Scopes $Scopes -NoWelcome -ContextScope Process
+        $MgContext = Get-MgContext
+        if (-not $MgContext) {
+            Write-Host "Microsoft Graph connection failed." -ForegroundColor Red
+            $retry = Get-YesNoInput "Try to connect again?"
+            if ($retry) {
+                Write-Host "Retrying connection..." -ForegroundColor Yellow
+                Connect-MgGraph -Scopes $Scopes -NoWelcome -ContextScope Process
+                $MgContext = Get-MgContext
+                if (-not $MgContext) {
+                    Write-Host "Microsoft Graph connection failed again. Exiting." -ForegroundColor Red
+                    exit 1
+                }
+            } else {
+                exit 1
+            }
         }
-        Write-Host "Connected successfully as: $($MgContext.Account) to $TenantDomain$newline" -ForegroundColor Cyan
-    } else {
-        Write-Host "Microsoft Graph connection failed." -ForegroundColor Red
     }
 }
 
@@ -302,7 +321,6 @@ function Get-UserMfaDetails {
             default { continue }
         }
         $AuthenticationMethod += $AuthMethod
-        #if ($AuthMethodDetails -ne $null) { $MFAMethodsCount++ }
         if ($AuthMethodDetails) { $MFAMethodsCount++ }
     }
     $AuthenticatorAppMethods = $MFAData | Where-Object { $_.AdditionalProperties["@odata.type"] -eq "#microsoft.graph.microsoftAuthenticatorAuthenticationMethod" } | ForEach-Object { $_.AdditionalProperties["displayName"] }
@@ -390,7 +408,8 @@ $menutext = @"
 
 Welcome to the Stew's fancy MFA script!
 
-The results will always be displayed in a separate Grid View Powershell window. (Like a spreadsheet)
+The results will be displayed automatically in your default app for CSV files, 
+and a summary will be shown in Notepad.
 
 You can choose to filter the results. Filter mode options are:
   1) Including all users in the report
@@ -405,22 +424,15 @@ If you choose to filter, you will be asked which filter mode, and if you want to
   - Users NOT set to disabled in Per-user MFA
   - Users with Sign-in allowed
 
-You can choose to export the results to a CSV file that will be saved to the same location as the script.
-
-You can choose to display a summary of the results in a separate window.
-
 ----------------------------------------
 
 "@
 Write-Output $menutext
 
-
 $filterConfig = Get-FilterConfiguration
-$ExportResults = (Get-YesNoInput "Export Results to CSV?")
-if($ExportResults -eq $true) { Write-Host "File path will be: $ExportPath" -ForegroundColor Cyan $newline }
-$ShowSummaryWindow = (Get-YesNoInput "Would you like to see a summary?")
-Write-Host ""
-Connect_MgGraph
+Write-Host "File path will be: $ExportPath" -ForegroundColor Cyan $newline
+
+Connect_MgGraph # Run the Connect to Microsoft Graph function
 
 # Download the latest Microsoft SKU reference file
 $csvUrl = "https://download.microsoft.com/download/e/3/e/e3e9faf2-f28b-490a-9ada-c6089a1fc5b0/Product%20names%20and%20service%20plan%20identifiers%20for%20licensing.csv"
@@ -429,7 +441,7 @@ Invoke-WebRequest -Uri $csvUrl -OutFile $csvPath
 $skuTable = Import-Csv $csvPath
 
 # Get list of users to begin processing
-$users = Get-MgUser -All -Property "Id,DisplayName,UserPrincipalName,UserType,AccountEnabled,AssignedLicenses" | Where-Object { $_.UserType -eq "Member" }
+$users = Get-MgUser -All -Property "Id,DisplayName,UserPrincipalName,UserType,AccountEnabled,AssignedLicenses" | Where-Object { $_.UserType -eq "Member" } | Sort-Object DisplayName
 
 # Determine if user is a Global Admin
 $roles = Get-MgDirectoryRole
@@ -473,7 +485,7 @@ foreach ($user in $users) {
 
     # Detailed per-user output
     Write-Host "###########################"
-    Write-Host "[$ProcessedUserCount/$total] Processing: $($userResult.DisplayName)"
+    Write-Host "[$ProcessedUserCount/$total]: $($userResult.DisplayName)"
     if ($userResult.Role -eq "Global Admin") { Write-Host "Role: Global Admin" -ForegroundColor Yellow } else { Write-Host "Role: User" }
     Write-Host "Sign-in Status: $($userResult.'Sign-in Status')"
     Write-Host "License Status: $($userResult.'License Status')"
@@ -481,7 +493,7 @@ foreach ($user in $users) {
     Write-Host "Per-user MFA Status: $($userResult.'Per-user MFA Status')"
     if ($userResult.'MFA Strength' -eq "Disabled") { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Red }
     if ($userResult.'MFA Strength' -eq "Strong")   { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Green }
-    if ($userResult.'MFA Strength' -eq "Weak")     { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Cyan }
+    if ($userResult.'MFA Strength' -eq "Weak")     { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Yellow }
     Write-Host "Default MFA Method: $($userResult.'Default MFA Method')"
     if ($userResult.'MFA Methods')           { Write-Host "$($userResult.'MFA Method Count') MFA Methods: $($userResult.'MFA Methods')" }
     if ($userResult.'MS Authenticator App')  { Write-Host "Authenticator Apps: $($userResult.'MS Authenticator App')" }
@@ -518,7 +530,15 @@ if ($ApplyFiltering) {
             (!$filterConfig.IncludePeruserMFA -or ($_. 'Per-user MFA Status' -ne "disabled")) -and
             (!$filterConfig.IncludeSigninAllowed -or $_.'Sign-in Status' -eq "Allowed")
         }
+    } elseif ($filterConfig.FilterMode -eq 4) {
+            $results = $results | Where-Object {
+            (!$filterConfig.IncludeGlobalAdmins -or $_.Role -eq "Global Admin") -or
+            (!$filterConfig.IncludeLicensed -or $_.'License Status' -eq "Licensed") -and
+            (!$filterConfig.IncludeSigninAllowed -or $_.'Sign-in Status' -eq "Allowed")
+        }
+
     }
+
 }
 $AfterFilterCount = @($results).Count
 
@@ -553,14 +573,13 @@ if($filterConfig.FilterMode -eq 1) {
 } else {
     if($filterConfig.FilterMode -eq 2){ $summary += "Filter Mode: Flexible$newline$newline" }
     if($filterConfig.FilterMode -eq 3){ $summary += "Filter Mode: Strict$newline$newline" }
+    $summary += "Default Filter: $($filterConfig.UseDefaultFilter)$newline"
     $summary += "IncludeGlobal: $($filterConfig.IncludeGlobalAdmins)$newline"
     $summary += "IncludeLicensed: $($filterConfig.IncludeLicensed)$newline"
     $summary += "IncludeMFADisabled: $($filterConfig.IncludeMFADisabled)$newline"
     $summary += "IncludePeruserMFA: $($filterConfig.IncludePeruserMFA)$newline"
     $summary += "IncludeSigninAllowed: $($filterConfig.IncludeSigninAllowed)$newline$newline"
 }
-$summary += "Export to CSV: $ExportResults$newline"
-$summary += "Show Summary: $ShowSummaryWindow$newline$newline"
 
 $summary += @"
 ##################################################
@@ -645,12 +664,8 @@ Script has completed analyzing users
 # Wrap up
 #----------------------------------------------------------------------------------------------#
 
-# If the user chose to export results, save to CSV
-if($ExportResults -eq $true) {
-    $outputPath = "$ExportPath\MFA-Report-$TenantName-$timestamp.csv"
-    $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $outputPath
-    Write-Host "MFA report saved to: $outputPath$newline"
-}
+
+
 
 # Ask if the user wants to disconnect from Microsoft Graph
 $result = Get-YesNoInputTimeout -Prompt "Disconnect from MgGraph? I'll wait 10 seconds, then disconnect automatically."
@@ -658,35 +673,16 @@ if ($result) {
     Write-Host "Disconnecting from Microsoft Graph and clearing tokens ...$newline" -ForegroundColor Cyan
     Disconnect-MgGraph | Out-Null
     Start-Sleep -Seconds 1  # Allow time for disconnection
-    Clear-MgGraphContext # Clear the context cache
     Clear-MgContextCache # Run function to remove any cached tokens
 } else {
     Write-Host "Maintaining connection to MgGraph.$newline" -ForegroundColor Cyan
 }
 
-# If the user chose to show a summary, display it in Notepad
-if($ShowSummaryWindow -eq $true){ Show-SummaryInNotepad -SummaryText $summary }
+# Show a summary in Notepad
+Show-SummaryInNotepad -SummaryText $summary
 
 # Show results in Excel or the default app
-if($ExportResults -eq $true) { # If you chose to export results, open the CSV file
-    Start-Process $outputPath  
-    } else { # If you did not choose to export results, create a temp file and show results
-        $csvPath = "$env:TEMP\MFA-Results.csv"
-        $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $csvPath
-        Start-Process $csvPath  # This will open the CSV file in Excel or the default app
-    }
+ExportResults
 
-<#
-if (Get-Command Out-GridView -ErrorAction SilentlyContinue) {
-    $results | Sort-Object Role, DisplayName | Out-GridView -Title "Microsoft 365 MFA Report"
-} else {
-    Write-Warning "Out-GridView is not available. Showing results in CSV format."
-    if($ExportResults -eq $true) {
-    Start-Process $outputPath  # Opens in Excel if installed
-    } else {
-        $csvPath = "$env:TEMP\MFA-Results.csv"
-        $results | Sort-Object Role, DisplayName | Export-Csv -NoTypeInformation -Path $csvPath
-        Start-Process $csvPath  # This will open the CSV file in Excel or the default app
-    }
-}
-#>
+
+
