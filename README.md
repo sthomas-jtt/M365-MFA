@@ -38,7 +38,4 @@ If you choose to filter, you will be asked which filter mode, and if you want to
   - Users NOT set to disabled in Per-user MFA
   - Users with Sign-in allowed
 
-You can choose to export the results to a CSV file that will be saved to the same location as the script.
-
-You can choose to display a summary of the results in a separate window.
 
