@@ -18,6 +18,15 @@ Now that legacy (per-user MFA) authentication is being retired and MFA managemen
 Defaults or Conditional Access, we should be setting all per-user MFA settings to disabled!
 https://learn.microsoft.com/en-us/microsoft-365/admin/security-and-compliance/multi-factor-authentication-microsoft-365 
 
+
+
+Author: Stewart Thomas | Jackson Thornton Technologies<br>
+Description: Retrieve and export results of Microsoft 365 Multi-factor Authentication<br>
+Last Updated: 6/4/2025<br>
+Modules: Microsoft.Graph.Authentication, Microsoft.Graph.Identity.DirectoryManagement, Microsoft.Graph.Beta.Identity.SignIns, Microsoft.Graph.Users, Microsoft.Graph.Beta.Users, Microsoft.Graph.Beta.Identity.SignIns<br>
+Scopes:  User.Read.All, UserAuthenticationMethod.Read.All, Policy.Read.All, Directory.Read.All, Domain.Read.All, Organization.Read.All<br>
+
+
 ------------------
 First, do you need to check for missing Powershell modules?
 
