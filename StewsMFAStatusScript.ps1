@@ -1,7 +1,7 @@
 <#
 Author: Stewart Thomas | Jackson Thornton Technologies
 Description: Retrieve and export results of Microsoft 365 Multi-factor Authentication
-Last Updated: 6/4/2025
+Last Updated: 6/5/2025
 Modules: Microsoft.Graph.Authentication
          Microsoft.Graph.Identity.DirectoryManagement
          Microsoft.Graph.Beta.Identity.SignIns
@@ -30,6 +30,7 @@ $ProcessedUserCount = 0
 $globalAdmins = @()
 
 function Maximize-PowerShellWindow {
+    # Maximizes the PowerShell window for better visibility.
     if ($psISE) {
         Write-Host "Detected PowerShell ISE. Launching regular PowerShell..."
         Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit", "-File `"$PSCommandPath`"" -WindowStyle Normal
@@ -53,6 +54,7 @@ function Maximize-PowerShellWindow {
 }
 
 function Clear-MgContextCache {
+    # Removes cached Microsoft Graph tokens if not currently connected.
     if (-not (Get-MgContext)) {
         $cacheFolder = "$env:LOCALAPPDATA\.IdentityService"
         if (Test-Path $cacheFolder) {
@@ -62,13 +64,38 @@ function Clear-MgContextCache {
 }
 
 function Check_Modules {
+    # Checks for and installs required PowerShell modules and providers.
     $newline
     $UserChoice = Get-YesNoInput "First, do you need to check for missing Powershell modules?"
     if ($UserChoice -eq $true) {
-        Write-Host "`nChecking for required Microsoft Graph modules..." -ForegroundColor Cyan
+        Write-Host "`nChecking for required prerequisites and Microsoft Graph modules..." -ForegroundColor Cyan
+        
+        # Prerequisite checks (PowerShellGet, NuGet, PSGallery)
+        if (-not (Get-Module -ListAvailable -Name PowerShellGet)) {
+            Write-Host "PowerShellGet module is required. Installing..." -ForegroundColor Yellow
+            Install-Module -Name PowerShellGet -Force -Scope CurrentUser
+        } else {
+            Write-Host "PowerShellGet module is already installed." -ForegroundColor Green
+        }
+        if (-not (Get-PackageProvider -ListAvailable | Where-Object Name -eq "NuGet")) {
+            Write-Host "NuGet provider is required. Installing..." -ForegroundColor Yellow
+            Install-PackageProvider -Name NuGet -Force -Scope CurrentUser
+        } else {
+            Write-Host "NuGet provider is already installed." -ForegroundColor Green
+        }
+        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if (-not $psGallery) {
+            Write-Host "Registering PSGallery repository..." -ForegroundColor Yellow
+            Register-PSRepository -Default
+        } elseif ($psGallery.InstallationPolicy -ne "Trusted") {
+            Write-Host "Setting PSGallery repository as trusted..." -ForegroundColor Yellow
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        } else {
+            Write-Host "PSGallery repository is already registered and trusted." -ForegroundColor Green
+        }
+
         $RequiredModules = @(
             "Microsoft.Graph.Authentication",
-            "Microsoft.Graph.Beta.Identity.SignIns",
             "Microsoft.Graph.Beta.Users",
             "Microsoft.Graph.Identity.SignIns",
             "Microsoft.Graph.Identity.DirectoryManagement",
@@ -79,7 +106,7 @@ function Check_Modules {
         if ($MissingModules.Count -gt 0) {
             Write-Host "`nInstalling missing modules..." -ForegroundColor Yellow
             Install-Module -Name $MissingModules -Scope CurrentUser -AllowClobber -Force
-            Write-Host "`nInstallation completed. Starting modules verification ..." -ForegroundColor Magenta
+            Write-Host "`nInstallation completed. Starting modules verification ..." -ForegroundColor Green
         } else {
             Write-Host "`nAll required modules are already installed." -ForegroundColor Green
         }
@@ -230,7 +257,7 @@ function Connect_MgGraph {
     }
     # If not connected (either first run or after disconnect), prompt for authentication
     if (-not $MgContext) {
-        Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Cyan
+        Write-Host "Connecting to Microsoft Graph...$newline" -ForegroundColor Cyan
         Connect-MgGraph -Scopes $Scopes -NoWelcome -ContextScope Process
         $MgContext = Get-MgContext
         if (-not $MgContext) {
@@ -429,29 +456,54 @@ If you choose to filter, you will be asked which filter mode, and if you want to
 "@
 Write-Output $menutext
 
+# Prompt user for filter configuration (which users to include in the report)
 $filterConfig = Get-FilterConfiguration
 Write-Host "File path will be: $ExportPath" -ForegroundColor Cyan $newline
 
-Connect_MgGraph # Run the Connect to Microsoft Graph function
+# Connect to Microsoft Graph and prompt for account if needed
+Connect_MgGraph 
 
 # Download the latest Microsoft SKU reference file
 $csvUrl = "https://download.microsoft.com/download/e/3/e/e3e9faf2-f28b-490a-9ada-c6089a1fc5b0/Product%20names%20and%20service%20plan%20identifiers%20for%20licensing.csv"
 $csvPath = "$env:TEMP\LicenseNames.csv"
-Invoke-WebRequest -Uri $csvUrl -OutFile $csvPath
-$skuTable = Import-Csv $csvPath
+try {
+    Invoke-WebRequest -Uri $csvUrl -OutFile $csvPath -ErrorAction Stop
+    $skuTable = Import-Csv $csvPath
+} catch {
+    Write-Host "Failed to download or import the SKU reference file: $_" -ForegroundColor Red
+    exit 1
+}
 
-# Get list of users to begin processing
-$users = Get-MgUser -All -Property "Id,DisplayName,UserPrincipalName,UserType,AccountEnabled,AssignedLicenses" | Where-Object { $_.UserType -eq "Member" } | Sort-Object DisplayName
+# Retrieve all users from Microsoft Graph to begin processing
+try {
+    $users = Get-MgUser -All -Property "Id,DisplayName,UserPrincipalName,UserType,AccountEnabled,AssignedLicenses" -ErrorAction Stop |
+        Where-Object { $_.UserType -eq "Member" } | Sort-Object DisplayName
+} catch {
+    Write-Host "Failed to retrieve users from Microsoft Graph: $_" -ForegroundColor Red
+    exit 1
+}
 
 # Determine if user is a Global Admin
-$roles = Get-MgDirectoryRole
-$globalAdminRole = $roles | Where-Object { $_.DisplayName -eq "Global Administrator" }
-if ($globalAdminRole) {
-    $globalAdmins = Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id | ForEach-Object { $_.Id }
+try {
+    $roles = Get-MgDirectoryRole -ErrorAction Stop
+    $globalAdminRole = $roles | Where-Object { $_.DisplayName -eq "Global Administrator" }
+    if ($globalAdminRole) {
+        $globalAdmins = @(Get-MgDirectoryRoleMember -DirectoryRoleId $globalAdminRole.Id -ErrorAction Stop | ForEach-Object { $_.Id })
+    } else {
+        $globalAdmins = @()
+    }
+} catch {
+    Write-Host "Failed to retrieve directory roles or global admins: $_" -ForegroundColor Red
+    $globalAdmins = @()
 }
 
 # Check if Security Defaults are enabled
-$SecurityDefaultsEnabled = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy | Select-Object -ExpandProperty IsEnabled
+try {
+    $SecurityDefaultsEnabled = Get-MgPolicyIdentitySecurityDefaultEnforcementPolicy -ErrorAction Stop | Select-Object -ExpandProperty IsEnabled
+} catch {
+    $SecurityDefaultsEnabled = $false
+    Write-Host "Could not determine Security Defaults status." -ForegroundColor Yellow
+}
 if ($SecurityDefaultsEnabled -eq $true) {
     Write-Host "Security Defaults are ENABLED$newline" -ForegroundColor Green
 } else {
@@ -459,16 +511,22 @@ if ($SecurityDefaultsEnabled -eq $true) {
 }
 
 # Check for Conditional Access
-$conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy
-if ($conditionalAccessPolicies) {
+try {
+    $conditionalAccessPolicies = Get-MgIdentityConditionalAccessPolicy -ErrorAction Stop
+} catch {
+    $conditionalAccessPolicies = $null
+    Write-Host "Could not retrieve Conditional Access policies." -ForegroundColor Yellow
+}
+if ($conditionalAccessPolicies -and $conditionalAccessPolicies.Count -gt 0) {
     Write-Host "Conditional Access policies found:" -ForegroundColor Green
     $conditionalAccessPolicies | Format-Table DisplayName, State
 } else {
-    Write-Host "No Conditional Access policies found.$newline"
+    Write-Host "No Conditional Access policies found.$newline" -ForegroundColor Yellow
 }
 
 $total = $users.Count
 Write-Host "There are $total Users in this tenant$newline"
+
 
 #----------------------------------------------------------------------------------------------#
 # Start processing user account and MFA details
@@ -562,6 +620,7 @@ if ($conditionalAccessPolicies) {
     $summary += "No Conditional Access policies found.`n"
     $summary += $newline
 }
+
 $summary += @"
 ##################################################
 Filtered Configuration Summary
@@ -569,7 +628,7 @@ Filtered Configuration Summary
 $newline
 "@
 if($filterConfig.FilterMode -eq 1) { 
-    $summary += "No filtering applied.$newline"
+    $summary += "No filtering applied.$newline$newline"
 } else {
     if($filterConfig.FilterMode -eq 2){ $summary += "Filter Mode: Flexible$newline$newline" }
     if($filterConfig.FilterMode -eq 3){ $summary += "Filter Mode: Strict$newline$newline" }
@@ -605,6 +664,24 @@ $summary += "Global Admins: $GlobalAdminsCount$newline"
 $summary += "Licensed Users: $LicensedUserCount$newline"
 $summary += "Sign-in Allowed Users: $SigninAllowedCount$newline$newline"
 
+
+# Count unique license types
+$allLicenseNames = $results | Where-Object { $_.'License Names' -ne "None" } | ForEach-Object { $_.'License Names' -split ',\s*' }
+$licenseTypeCounts = $allLicenseNames | Group-Object | Sort-Object Count -Descending
+
+if ($licenseTypeCounts.Count -gt 0) {
+    $licenseSummary += ($licenseTypeCounts | Format-Table Name, Count -AutoSize | Out-String)
+    $summary += @"
+##################################################
+License Type Breakdown
+##################################################
+$newline
+"@
+    $summary += $licenseSummary + "`r`n"
+}
+
+
+
 $summary += @"
 ##################################################
 Users MFA Summary
@@ -622,7 +699,7 @@ $summary += "Users with Weak MFA Strength: $WeakMFACount$newline"
 $summary += "Users with Strong MFA Strength: $StrongMFACount$newline"
 $summary += "Per-User MFA not disabled: $perUserMFACount$newline$newline"
 
-$noMfaUsers = $results | Where-Object { $_.'MFA Method Count' -eq 0 }
+$noMfaUsers = @($results | Where-Object { $_.'MFA Method Count' -eq 0 })
 $noMfaTable = $noMfaUsers | Select-Object DisplayName, UserPrincipalName | Format-Table -AutoSize | Out-String
 if ($noMfaUsers.Count -gt 0) {
     $summary += @"
@@ -640,7 +717,7 @@ $newline
 "@
 }
 
-if ($usersWithMfa = $results | Where-Object { $_.'MFA Method Count' -gt 0 }) {
+if ($usersWithMfa = @($results | Where-Object { $_.'MFA Method Count' -gt 0 })) {
     $mfaMethodsArray = $usersWithMfa | ForEach-Object {
         $_.'Enabled MFA Methods' -split ',\s*'
     }
@@ -681,8 +758,9 @@ if ($result) {
 # Show a summary in Notepad
 Show-SummaryInNotepad -SummaryText $summary
 
-# Show results in Excel or the default app
-ExportResults
-
-
-
+# Only export and display results if there are results
+if ($results.Count -gt 0) {
+    ExportResults # Show results in Excel or the default app
+} else {
+    Write-Host "No results found. Not exporting an empty CSV file." -ForegroundColor Yellow
+}
