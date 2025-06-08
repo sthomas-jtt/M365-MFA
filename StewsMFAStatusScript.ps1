@@ -8,12 +8,14 @@ Modules: Microsoft.Graph.Authentication
          Microsoft.Graph.Users
          Microsoft.Graph.Beta.Users
          Microsoft.Graph.Beta.Identity.SignIns
+         Microsoft.Graph.Mail
 Scopes:  User.Read.All
          UserAuthenticationMethod.Read.All
          Policy.Read.All
          Directory.Read.All
          Domain.Read.All
          Organization.Read.All
+         MailboxSettings.Read
 #>
 
 #---------------------------------------------------------------------------------------------#
@@ -99,7 +101,9 @@ function Check_Modules {
             "Microsoft.Graph.Beta.Users",
             "Microsoft.Graph.Identity.SignIns",
             "Microsoft.Graph.Identity.DirectoryManagement",
-            "Microsoft.Graph.Users"
+            "Microsoft.Graph.Users",
+            "Microsoft.Graph.Mail",
+            "ExchangeOnlineManagement"
         )
         $AvailableModules = Get-Module -ListAvailable
         $MissingModules = $RequiredModules | Where-Object { -not ($AvailableModules | Where-Object Name -eq $_) }
@@ -131,6 +135,7 @@ function ExportResults {
     Write-Host "MFA report saved to: $outputPath$newline"
     Start-Process $outputPath  
 }
+
 function Show-SummaryInNotepad {
     param(
         [string]$Title = "MFA Summary Information",
@@ -177,6 +182,8 @@ function Get-YesNoInputTimeout {
     return $true
 }
 
+
+
 function Get-FilterModeInput {
     Write-Host "(1) " -ForegroundColor Yellow -NoNewline
     Write-Host "None - Get all results, " -ForegroundColor White -NoNewline
@@ -206,6 +213,7 @@ function Get-FilterConfiguration {
         IncludeMFADisabled   = $false
         IncludePeruserMFA    = $false
         IncludeSigninAllowed = $false
+        IncludeHasMailbox    = $false
     }
     if ($FilterMode -eq 2 -or $FilterMode -eq 3 -or $FilterMode -eq 4) {
         if ($FilterMode -eq 4) {
@@ -218,6 +226,7 @@ function Get-FilterConfiguration {
             Write-Host ""
             $config.IncludeGlobalAdmins  = Get-YesNoInput "Include Global Admins?"
             $config.IncludeLicensed      = Get-YesNoInput "Include Licensed Users?"
+            $config.IncludeHasMailbox    = Get-YesNoInput "Include Users with Exchange Mailbox?"
             $config.IncludeMFADisabled   = Get-YesNoInput "Include Users with no MFA?"
             $config.IncludePeruserMFA    = Get-YesNoInput "Include Users with Per-user MFA NOT disabled?"
             $config.IncludeSigninAllowed = Get-YesNoInput "Include Users allowed to sign-in?"
@@ -234,7 +243,8 @@ function Connect_MgGraph {
         "Policy.Read.All",
         "Directory.Read.All",
         "Domain.Read.All",
-        "Organization.Read.All"
+        "Organization.Read.All",
+        "MailboxSettings.Read"
     )
     $MgContext = Get-MgContext
     if ($MgContext) {
@@ -250,7 +260,8 @@ function Connect_MgGraph {
             Disconnect-MgGraph | Out-Null
             $MgContext = $null
         } else {
-            Write-Host "$newline Continuing with the current authentication session." -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "Continuing with the current authentication session." -ForegroundColor Cyan
             Write-Host ""
             return
         }
@@ -397,13 +408,16 @@ function Get-UserMfaDetails {
     if ($MFAStrength -ne "Strong" -and ($AuthenticationMethod -match "PhoneAuthentication|EmailAuthentication")) { $MFAStrength = "Weak" }
 
    
+    $mailboxInfo = Has-ExchangeMailbox -UserPrincipalName $UPN
     return [PSCustomObject]@{
         DisplayName               = $Name
         UserPrincipalName         = $UPN
+        'Sign-in Status'          = $SigninStatus
         Role                      = if ($isGlobalAdmin) { "Global Admin" } else { "User" }
         'License Status'          = $LicenseStatus
         'License Names'           = if ($uniqueLicenseNames) { $uniqueLicenseNames -join ', ' } else { "None" }
-        'Sign-in Status'          = $SigninStatus
+        'Has Mailbox'             = $mailboxInfo.HasMailbox
+        'Mailbox Type'            = $mailboxInfo.MailboxType
         'Per-user MFA Status'     = $PerUserMFAStatus
         'MFA Strength'            = $MFAStrength
         'MFA Method Count'        = $MFAMethodsCount
@@ -458,10 +472,63 @@ Write-Output $menutext
 
 # Prompt user for filter configuration (which users to include in the report)
 $filterConfig = Get-FilterConfiguration
-Write-Host "File path will be: $ExportPath" -ForegroundColor Cyan $newline
+Write-Host $newline"File path will be: $ExportPath" -ForegroundColor Cyan $newline
 
 # Connect to Microsoft Graph and prompt for account if needed
 Connect_MgGraph 
+
+# Prompt user for Exchange mailbox status retrieval method
+$RetrieveMailboxStatus = Get-YesNoInput "Do you want to retrieve Exchange mailbox status using Exchange Online (most accurate, requires separate login)"
+if($RetrieveMailboxStatus -eq $false) {
+    Write-Host "Will retrieve mailbox status using MgGraph, but might not be as accurate as Exchange Online module.$newline" -ForegroundColor Yellow
+}
+
+if ($RetrieveMailboxStatus) {
+    # Connect to Exchange Online
+    try {
+        Connect-ExchangeOnline -ShowBanner:$false | Out-Null
+    } catch {
+        Write-Host "Failed to connect to Exchange Online: $_" -ForegroundColor Red
+        exit 1
+    }
+    function Has-ExchangeMailbox {
+        param([string]$UserPrincipalName)
+        try {
+            $mailbox = Get-Mailbox -Identity $UserPrincipalName -ErrorAction Stop
+            if ($mailbox) {
+                return [PSCustomObject]@{
+                    HasMailbox = $true
+                    MailboxType = $mailbox.RecipientTypeDetails
+                }
+            } else {
+                return [PSCustomObject]@{
+                    HasMailbox = $false
+                    MailboxType = $null
+                }
+            }
+        } catch {
+            return [PSCustomObject]@{
+                HasMailbox = $false
+                MailboxType = $null
+            }
+        }
+    }
+} else {
+    function Has-ExchangeMailbox {
+        param([string]$UserPrincipalName)
+        try {
+            $user = Get-MgUser -UserId $UserPrincipalName -Property mail -ErrorAction Stop
+            if ($user.mail) {
+                return $true
+            } else {
+                return $false
+            }
+        } catch {
+            return $false
+        }
+    }
+}
+
 
 # Download the latest Microsoft SKU reference file
 $csvUrl = "https://download.microsoft.com/download/e/3/e/e3e9faf2-f28b-490a-9ada-c6089a1fc5b0/Product%20names%20and%20service%20plan%20identifiers%20for%20licensing.csv"
@@ -505,8 +572,10 @@ try {
     Write-Host "Could not determine Security Defaults status." -ForegroundColor Yellow
 }
 if ($SecurityDefaultsEnabled -eq $true) {
+    Write-Host ""
     Write-Host "Security Defaults are ENABLED$newline" -ForegroundColor Green
 } else {
+    Write-Host ""
     Write-Host "Security Defaults are DISABLED$newline" -ForegroundColor Red
 }
 
@@ -541,13 +610,17 @@ foreach ($user in $users) {
     $userResult = Get-UserMfaDetails -User $user -skuTable $skuTable -globalAdmins $globalAdmins
     $results += $userResult
 
-    # Detailed per-user output
+    # Check if the user has an Exchange mailbox
+    #$hasMailbox = Has-ExchangeMailbox -UserPrincipalName $user.UserPrincipalName
+
+    # Detailed per-user output 
     Write-Host "###########################"
     Write-Host "[$ProcessedUserCount/$total]: $($userResult.DisplayName)"
     if ($userResult.Role -eq "Global Admin") { Write-Host "Role: Global Admin" -ForegroundColor Yellow } else { Write-Host "Role: User" }
     Write-Host "Sign-in Status: $($userResult.'Sign-in Status')"
     Write-Host "License Status: $($userResult.'License Status')"
     if ($userResult.'License Names' -ne "None") { Write-Host "License Names: $($userResult.'License Names')" }
+    if ($userResult.'Has Mailbox') { Write-Host "Has Mailbox: True ($($userResult.'Mailbox Type'))" -ForegroundColor Cyan }
     Write-Host "Per-user MFA Status: $($userResult.'Per-user MFA Status')"
     if ($userResult.'MFA Strength' -eq "Disabled") { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Red }
     if ($userResult.'MFA Strength' -eq "Strong")   { Write-Host "MFA Strength: $($userResult.'MFA Strength')" -ForegroundColor Green }
@@ -578,7 +651,8 @@ if ($ApplyFiltering) {
             ($filterConfig.IncludeLicensed -and $_.'License Status' -eq "Licensed") -or
             ($filterConfig.IncludeMFADisabled -and ($_. 'MFA Strength' -eq "Disabled" -or $_.'MFA Method Count' -eq 0)) -or
             ($filterConfig.IncludePeruserMFA -and ($_. 'Per-user MFA Status' -ne "disabled")) -or
-            ($filterConfig.IncludeSigninAllowed -and $_.'Sign-in Status' -eq "Allowed")
+            ($filterConfig.IncludeSigninAllowed -and $_.'Sign-in Status' -eq "Allowed") -or
+            ($filterConfig.IncludeHasMailbox -and $_.'Has Mailbox' -eq $true)
         }
     } elseif ($filterConfig.FilterMode -eq 3) {
         $results = $results | Where-Object {
@@ -586,7 +660,8 @@ if ($ApplyFiltering) {
             (!$filterConfig.IncludeLicensed -or $_.'License Status' -eq "Licensed") -and
             (!$filterConfig.IncludeMFADisabled -or ($_. 'MFA Strength' -eq "Disabled" -or $_.'MFA Method Count' -eq 0)) -and
             (!$filterConfig.IncludePeruserMFA -or ($_. 'Per-user MFA Status' -ne "disabled")) -and
-            (!$filterConfig.IncludeSigninAllowed -or $_.'Sign-in Status' -eq "Allowed")
+            (!$filterConfig.IncludeSigninAllowed -or $_.'Sign-in Status' -eq "Allowed") -and
+            (!$filterConfig.IncludeHasMailbox -or $_.'Has Mailbox' -eq $true) 
         }
     } elseif ($filterConfig.FilterMode -eq 4) {
             $results = $results | Where-Object {
@@ -635,6 +710,7 @@ if($filterConfig.FilterMode -eq 1) {
     $summary += "Default Filter: $($filterConfig.UseDefaultFilter)$newline"
     $summary += "IncludeGlobal: $($filterConfig.IncludeGlobalAdmins)$newline"
     $summary += "IncludeLicensed: $($filterConfig.IncludeLicensed)$newline"
+    $summary += "IncludeHasMailbox: $($filterConfig.IncludeHasMailbox)$newline"
     $summary += "IncludeMFADisabled: $($filterConfig.IncludeMFADisabled)$newline"
     $summary += "IncludePeruserMFA: $($filterConfig.IncludePeruserMFA)$newline"
     $summary += "IncludeSigninAllowed: $($filterConfig.IncludeSigninAllowed)$newline$newline"
@@ -675,10 +751,28 @@ if ($licenseTypeCounts.Count -gt 0) {
 ##################################################
 License Type Breakdown
 ##################################################
-$newline
+
 "@
     $summary += $licenseSummary + "`r`n"
 }
+
+
+$MailboxCount      = ($results | Where-Object { $_.'Has Mailbox' -eq $true } | Measure-Object).Count
+$NoMailboxCount    = ($results | Where-Object { $_.'Has Mailbox' -eq $false } | Measure-Object).Count
+$UserMailboxCount    = ($results | Where-Object { $_.'Mailbox Type' -eq 'UserMailbox' } | Measure-Object).Count
+$SharedMailboxCount  = ($results | Where-Object { $_.'Mailbox Type' -eq 'SharedMailbox' } | Measure-Object).Count
+
+$summary += @"
+##################################################
+Exchange Mailbox Status Summary
+##################################################
+
+Users with Mailbox: $MailboxCount
+  Total UserMailbox: $UserMailboxCount
+  Total SharedMailbox: $SharedMailboxCount
+Users without Mailbox: $NoMailboxCount
+$newline
+"@
 
 
 
@@ -751,6 +845,9 @@ if ($result) {
     Disconnect-MgGraph | Out-Null
     Start-Sleep -Seconds 1  # Allow time for disconnection
     Clear-MgContextCache # Run function to remove any cached tokens
+    try {
+        Disconnect-ExchangeOnline -Confirm:$false
+    } catch {}
 } else {
     Write-Host "Maintaining connection to MgGraph.$newline" -ForegroundColor Cyan
 }
@@ -759,6 +856,8 @@ if ($result) {
 Show-SummaryInNotepad -SummaryText $summary
 
 # Only export and display results if there are results
+$results = @($results)  # <-- This ensures $results is always an array
+
 if ($results.Count -gt 0) {
     ExportResults # Show results in Excel or the default app
 } else {
